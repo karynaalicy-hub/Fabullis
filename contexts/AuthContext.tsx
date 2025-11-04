@@ -1,6 +1,7 @@
 import React, { createContext, useState, useContext, useEffect, ReactNode } from 'react';
+import { User as AuthUser } from '@supabase/supabase-js';
+import { supabase } from '../src/lib/supabase';
 import { User, UserSubscription } from '../types';
-import { authAPI, storeAPI } from '../services/api';
 
 interface AuthContextType {
   currentUser: User | null;
@@ -8,9 +9,10 @@ interface AuthContextType {
   activeSubscription: UserSubscription | null;
   hasActiveSubscription: boolean;
   login: (email: string, password: string) => Promise<User>;
-  logout: () => void;
+  logout: () => Promise<void>;
   register: (nome_usuario: string, email: string, password: string, role?: string) => Promise<User>;
-  refreshSubscription: () => void;
+  refreshSubscription: () => Promise<void>;
+  loading: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -20,85 +22,203 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [activeSubscription, setActiveSubscription] = useState<UserSubscription | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const refreshSubscription = async () => {
-    if (currentUser) {
-      try {
-        const data = await storeAPI.checkSubscription();
-        if (data.hasActiveSubscription && data.subscription) {
-          setActiveSubscription(data.subscription);
-        } else {
-          setActiveSubscription(null);
-        }
-      } catch (error) {
-        console.error('Erro ao verificar assinatura:', error);
-        setActiveSubscription(null);
+  // Buscar dados do usuário no banco
+  const fetchUserData = async (authUser: AuthUser): Promise<User | null> => {
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', authUser.id)
+        .single();
+
+      if (error) {
+        console.error('Erro ao buscar dados do usuário:', error);
+        return null;
       }
+
+      return data as User;
+    } catch (error) {
+      console.error('Erro ao buscar dados do usuário:', error);
+      return null;
     }
   };
 
-  const loadCurrentUser = async () => {
-    const token = localStorage.getItem('token');
-    if (!token) {
-      setLoading(false);
-      return;
-    }
+  // Verificar assinatura ativa
+  const refreshSubscription = async () => {
+    if (!currentUser) return;
 
     try {
-      const data = await authAPI.getMe();
-      setCurrentUser(data);
-      
-      // Verificar assinatura
-      if (data.hasActiveSubscription !== undefined) {
-        // O backend já retorna se tem assinatura ativa
-        if (!data.hasActiveSubscription) {
-          setActiveSubscription(null);
-        } else {
-          // Buscar detalhes da assinatura
-          await refreshSubscription();
-        }
+      const { data, error } = await supabase
+        .from('user_subscriptions')
+        .select(`
+          *,
+          subscription_plans (*)
+        `)
+        .eq('user_id', currentUser.id)
+        .gte('end_date', new Date().toISOString())
+        .order('end_date', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (error || !data) {
+        setActiveSubscription(null);
+        return;
       }
+
+      setActiveSubscription(data as any);
     } catch (error) {
-      console.error('Erro ao carregar usuário:', error);
-      localStorage.removeItem('token');
-      setCurrentUser(null);
+      console.error('Erro ao verificar assinatura:', error);
       setActiveSubscription(null);
-    } finally {
-      setLoading(false);
     }
   };
 
+  // Carregar sessão do usuário
   useEffect(() => {
-    loadCurrentUser();
+    const loadSession = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (session?.user) {
+          const userData = await fetchUserData(session.user);
+          if (userData) {
+            setCurrentUser(userData);
+            // Verificar assinatura após carregar usuário
+            const { data: subscription } = await supabase
+              .from('user_subscriptions')
+              .select(`
+                *,
+                subscription_plans (*)
+              `)
+              .eq('user_id', userData.id)
+              .gte('end_date', new Date().toISOString())
+              .order('end_date', { ascending: false })
+              .limit(1)
+              .single();
+            
+            if (subscription) {
+              setActiveSubscription(subscription as any);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Erro ao carregar sessão:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadSession();
+
+    // Escutar mudanças na autenticação
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' && session?.user) {
+        const userData = await fetchUserData(session.user);
+        if (userData) {
+          setCurrentUser(userData);
+          // Verificar assinatura
+          const { data: sub } = await supabase
+            .from('user_subscriptions')
+            .select(`
+              *,
+              subscription_plans (*)
+            `)
+            .eq('user_id', userData.id)
+            .gte('end_date', new Date().toISOString())
+            .order('end_date', { ascending: false })
+            .limit(1)
+            .single();
+          
+          if (sub) {
+            setActiveSubscription(sub as any);
+          }
+        }
+      } else if (event === 'SIGNED_OUT') {
+        setCurrentUser(null);
+        setActiveSubscription(null);
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, []);
 
   const login = async (email: string, password: string): Promise<User> => {
     try {
-      const data = await authAPI.login(email, password);
-      setCurrentUser(data.user);
-      
-      // Verificar assinatura após login
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) throw error;
+
+      if (!data.user) {
+        throw new Error('Erro ao fazer login');
+      }
+
+      const userData = await fetchUserData(data.user);
+      if (!userData) {
+        throw new Error('Usuário não encontrado no banco de dados');
+      }
+
+      setCurrentUser(userData);
       await refreshSubscription();
       
-      return data.user;
+      return userData;
     } catch (error: any) {
+      console.error('Erro no login:', error);
       throw new Error(error.message || 'Email ou senha inválidos.');
     }
   };
 
   const register = async (nome_usuario: string, email: string, password: string, role: string = 'user'): Promise<User> => {
     try {
-      const data = await authAPI.register(nome_usuario, email, password, role);
-      setCurrentUser(data.user);
-      return data.user;
+      // 1. Criar usuário no Supabase Auth
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email,
+        password,
+      });
+
+      if (authError) throw authError;
+
+      if (!authData.user) {
+        throw new Error('Erro ao criar conta');
+      }
+
+      // 2. Criar registro na tabela users
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .insert({
+          id: authData.user.id,
+          nome_usuario,
+          email,
+          role: role as 'user' | 'author' | 'admin',
+        })
+        .select()
+        .single();
+
+      if (userError) {
+        // Se falhar ao criar usuário, deletar da auth
+        await supabase.auth.admin.deleteUser(authData.user.id);
+        throw userError;
+      }
+
+      setCurrentUser(userData as User);
+      return userData as User;
     } catch (error: any) {
+      console.error('Erro no registro:', error);
       throw new Error(error.message || 'Erro ao criar conta.');
     }
   };
 
-  const logout = () => {
-    authAPI.logout();
-    setCurrentUser(null);
-    setActiveSubscription(null);
+  const logout = async () => {
+    try {
+      await supabase.auth.signOut();
+      setCurrentUser(null);
+      setActiveSubscription(null);
+    } catch (error) {
+      console.error('Erro ao fazer logout:', error);
+    }
   };
 
   const value = {
@@ -110,6 +230,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     logout,
     register,
     refreshSubscription,
+    loading,
   };
 
   if (loading) {
