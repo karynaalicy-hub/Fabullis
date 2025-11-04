@@ -1,0 +1,5 @@
+{
+  "name": "Fabullis",
+  "description": "A responsive web platform that serves as a personal library for publishing and organizing works of fiction (books, short stories, fanfics) for readers. It supports multiple languages and allows filtering by genre.",
+  "requestFramePermissions": []
+}
