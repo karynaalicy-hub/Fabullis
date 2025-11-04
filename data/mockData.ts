@@ -201,6 +201,7 @@ export let sales: Sale[] = [
 
 // Helper functions to simulate database queries
 export const getStoryById = (id: number) => stories.find(s => s.id === id);
+export const getChapterById = (id: number) => chapters.find(c => c.id === id);
 export const getChaptersByStoryId = (storyId: number) => chapters.filter(c => c.historia_id === storyId).sort((a, b) => a.numero_capitulo - b.numero_capitulo);
 export const getAuthorByStory = (story: Story) => users.find(u => u.id === story.autor_id);
 export const getGenresByStory = (story: Story) => genres.filter(g => story.generos.includes(g.id));
