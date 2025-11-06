@@ -20,17 +20,10 @@ const HomePage: React.FC = () => {
         setLoading(true);
         setError(null);
 
-        // Fetch stories
+        // Fetch stories (sem JOIN - mais simples)
         const { data: storiesData, error: storiesError } = await supabase
           .from('stories')
-          .select(`
-            *,
-            users (
-              id,
-              nome_usuario,
-              avatar_url
-            )
-          `)
+          .select('*')
           .order('data_publicacao', { ascending: false })
           .limit(4);
 
@@ -39,18 +32,10 @@ const HomePage: React.FC = () => {
           throw new Error('Erro ao carregar histórias');
         }
 
-        // Fetch latest chapters
+        // Fetch latest chapters (sem JOIN - mais simples)
         const { data: chaptersData, error: chaptersError } = await supabase
           .from('chapters')
-          .select(`
-            *,
-            stories (
-              id,
-              titulo,
-              capa_url,
-              autor_id
-            )
-          `)
+          .select('*')
           .order('data_publicacao', { ascending: false })
           .limit(3);
 
@@ -61,10 +46,22 @@ const HomePage: React.FC = () => {
 
         // Transform data
         const stories = storiesData || [];
-        const chapters = (chaptersData || []).map(chapter => ({
-          ...chapter,
-          story: chapter.stories
-        }));
+        
+        // Para chapters, precisamos buscar as stories relacionadas
+        const chapters = await Promise.all(
+          (chaptersData || []).map(async (chapter) => {
+            const { data: storyData } = await supabase
+              .from('stories')
+              .select('id, titulo, capa_url, autor_id')
+              .eq('id', chapter.historia_id)
+              .single();
+            
+            return {
+              ...chapter,
+              story: storyData
+            };
+          })
+        );
 
         setNewStories(stories);
         setLatestChapters(chapters);
@@ -139,7 +136,7 @@ const HomePage: React.FC = () => {
                 key={story.id} 
                 story={story} 
                 chapterCount={0} // TODO: Get from database
-                authorName={story.users?.nome_usuario || 'Desconhecido'}
+                authorName={'Autor'} // TODO: Buscar do banco
                 authorId={story.autor_id}
                 likeCount={0} // TODO: Get from database
                 commentCount={0} // TODO: Get from database
