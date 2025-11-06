@@ -1,8 +1,36 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Configuração do Supabase
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://zuvrrsqhvfewnlafewqw.supabase.co';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp1dnJyc3FodmZld25sYWZld3F3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIyNzE3MjIsImV4cCI6MjA3Nzg0NzcyMn0.hAQcT3ytw4bW8KriPa9gJ9Tj4HAeH-vK0dPoCiy01rw';
+// Configuração do Supabase com validação
+const FALLBACK_URL = 'https://zuvrrsqhvfewnlafewqw.supabase.co';
+const FALLBACK_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp1dnJyc3FodmZld25sYWZld3F3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIyNzE3MjIsImV4cCI6MjA3Nzg0NzcyMn0.hAQcT3ytw4bW8KriPa9gJ9Tj4HAeH-vK0dPoCiy01rw';
+
+// Pegar variáveis de ambiente com validação
+const envUrl = import.meta.env.VITE_SUPABASE_URL;
+const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+// Validar e usar fallback se necessário
+const supabaseUrl = (envUrl && typeof envUrl === 'string' && envUrl.trim().length > 0) 
+  ? envUrl.trim() 
+  : FALLBACK_URL;
+
+const supabaseAnonKey = (envKey && typeof envKey === 'string' && envKey.trim().length > 0) 
+  ? envKey.trim() 
+  : FALLBACK_KEY;
+
+// Log para debug (apenas em desenvolvimento)
+if (import.meta.env.DEV) {
+  console.log('Supabase Config:', {
+    url: supabaseUrl,
+    keyLength: supabaseAnonKey.length,
+    usingFallback: supabaseUrl === FALLBACK_URL
+  });
+}
+
+// Validação final antes de criar cliente
+if (!supabaseUrl || !supabaseUrl.startsWith('http')) {
+  console.error('Invalid Supabase URL:', supabaseUrl);
+  throw new Error('Configuração do Supabase inválida. Verifique as variáveis de ambiente.');
+}
 
 // Criar cliente Supabase
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
