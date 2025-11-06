@@ -17,32 +17,19 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// Helper: Promise with timeout
-const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T> => {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) => 
-      setTimeout(() => reject(new Error('Request timeout')), ms)
-    )
-  ]);
-};
-
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [activeSubscription, setActiveSubscription] = useState<UserSubscription | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false); // Mudado para false - não carrega no início
 
   // Buscar dados do usuário no banco
   const fetchUserData = async (authUser: AuthUser): Promise<User | null> => {
     try {
-      const { data, error } = await withTimeout(
-        supabase
-          .from('users')
-          .select('*')
-          .eq('id', authUser.id)
-          .single(),
-        5000 // 5 segundos timeout
-      );
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', authUser.id)
+        .single();
 
       if (error) {
         console.error('Erro ao buscar dados do usuário:', error);
@@ -61,20 +48,17 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!currentUser) return;
 
     try {
-      const { data, error } = await withTimeout(
-        supabase
-          .from('user_subscriptions')
-          .select(`
-            *,
-            subscription_plans (*)
-          `)
-          .eq('user_id', currentUser.id)
-          .gte('end_date', new Date().toISOString())
-          .order('end_date', { ascending: false })
-          .limit(1)
-          .single(),
-        5000
-      );
+      const { data, error } = await supabase
+        .from('user_subscriptions')
+        .select(`
+          *,
+          subscription_plans (*)
+        `)
+        .eq('user_id', currentUser.id)
+        .gte('end_date', new Date().toISOString())
+        .order('end_date', { ascending: false })
+        .limit(1)
+        .single();
 
       if (error || !data) {
         setActiveSubscription(null);
@@ -88,115 +72,52 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Carregar sessão do usuário
+  // NÃO carrega sessão no início - apenas configura listener
   useEffect(() => {
-    const loadSession = async () => {
-      try {
-        // Timeout de 8 segundos para getSession
-        const { data: { session } } = await withTimeout(
-          supabase.auth.getSession(),
-          8000
-        );
-        
-        if (session?.user) {
-          const userData = await fetchUserData(session.user);
-          if (userData) {
-            setCurrentUser(userData);
-            // Verificar assinatura após carregar usuário (não bloqueia se falhar)
-            try {
-              const { data: subscription } = await withTimeout(
-                supabase
-                  .from('user_subscriptions')
-                  .select(`
-                    *,
-                    subscription_plans (*)
-                  `)
-                  .eq('user_id', userData.id)
-                  .gte('end_date', new Date().toISOString())
-                  .order('end_date', { ascending: false })
-                  .limit(1)
-                  .single(),
-                5000
-              );
-              
-              if (subscription) {
-                setActiveSubscription(subscription as any);
-              }
-            } catch (subError) {
-              console.warn('Não foi possível carregar assinatura:', subError);
-              // Não bloqueia o app se falhar
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Erro ao carregar sessão:', error);
-        // Continua mesmo se falhar - usuário não autenticado
-      } finally {
-        // SEMPRE libera o loading, mesmo se falhar
-        setLoading(false);
-      }
-    };
-
-    loadSession();
-
     // Escutar mudanças na autenticação
-    let subscription: any;
-    try {
-      const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
-        if (event === 'SIGNED_IN' && session?.user) {
-          const userData = await fetchUserData(session.user);
-          if (userData) {
-            setCurrentUser(userData);
-            // Verificar assinatura (não bloqueia se falhar)
-            try {
-              const { data: sub } = await withTimeout(
-                supabase
-                  .from('user_subscriptions')
-                  .select(`
-                    *,
-                    subscription_plans (*)
-                  `)
-                  .eq('user_id', userData.id)
-                  .gte('end_date', new Date().toISOString())
-                  .order('end_date', { ascending: false })
-                  .limit(1)
-                  .single(),
-                5000
-              );
-              
-              if (sub) {
-                setActiveSubscription(sub as any);
-              }
-            } catch (subError) {
-              console.warn('Não foi possível carregar assinatura:', subError);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' && session?.user) {
+        const userData = await fetchUserData(session.user);
+        if (userData) {
+          setCurrentUser(userData);
+          // Verificar assinatura
+          try {
+            const { data: sub } = await supabase
+              .from('user_subscriptions')
+              .select(`
+                *,
+                subscription_plans (*)
+              `)
+              .eq('user_id', userData.id)
+              .gte('end_date', new Date().toISOString())
+              .order('end_date', { ascending: false })
+              .limit(1)
+              .single();
+            
+            if (sub) {
+              setActiveSubscription(sub as any);
             }
+          } catch (error) {
+            console.warn('Erro ao carregar assinatura:', error);
           }
-        } else if (event === 'SIGNED_OUT') {
-          setCurrentUser(null);
-          setActiveSubscription(null);
         }
-      });
-      subscription = data.subscription;
-    } catch (error) {
-      console.error('Erro ao configurar listener de auth:', error);
-    }
+      } else if (event === 'SIGNED_OUT') {
+        setCurrentUser(null);
+        setActiveSubscription(null);
+      }
+    });
 
     return () => {
-      if (subscription) {
-        subscription.unsubscribe();
-      }
+      subscription.unsubscribe();
     };
   }, []);
 
   const login = async (email: string, password: string): Promise<User> => {
     try {
-      const { data, error } = await withTimeout(
-        supabase.auth.signInWithPassword({
-          email,
-          password,
-        }),
-        10000
-      );
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
 
       if (error) throw error;
 
@@ -222,13 +143,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const register = async (nome_usuario: string, email: string, password: string, role: string = 'user'): Promise<User> => {
     try {
       // 1. Criar usuário no Supabase Auth
-      const { data: authData, error: authError } = await withTimeout(
-        supabase.auth.signUp({
-          email,
-          password,
-        }),
-        10000
-      );
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email,
+        password,
+      });
 
       if (authError) throw authError;
 
@@ -237,19 +155,16 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
 
       // 2. Criar registro na tabela users
-      const { data: userData, error: userError } = await withTimeout(
-        supabase
-          .from('users')
-          .insert({
-            id: authData.user.id,
-            nome_usuario,
-            email,
-            role: role as 'user' | 'author' | 'admin',
-          })
-          .select()
-          .single(),
-        10000
-      );
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .insert({
+          id: authData.user.id,
+          nome_usuario,
+          email,
+          role: role as 'user' | 'author' | 'admin',
+        })
+        .select()
+        .single();
 
       if (userError) {
         // Se falhar ao criar usuário, deletar da auth
@@ -267,14 +182,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const logout = async () => {
     try {
-      await withTimeout(supabase.auth.signOut(), 5000);
+      await supabase.auth.signOut();
       setCurrentUser(null);
       setActiveSubscription(null);
     } catch (error) {
       console.error('Erro ao fazer logout:', error);
-      // Limpa localmente mesmo se falhar
-      setCurrentUser(null);
-      setActiveSubscription(null);
     }
   };
 
@@ -290,32 +202,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     loading,
   };
 
-  if (loading) {
-    return (
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        height: '100vh',
-        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
-      }}>
-        <div style={{ 
-          textAlign: 'center',
-          color: 'white'
-        }}>
-          <div style={{ 
-            fontSize: '1.5rem',
-            marginBottom: '1rem'
-          }}>Carregando...</div>
-          <div style={{ 
-            fontSize: '0.875rem',
-            opacity: 0.8
-          }}>Conectando ao servidor...</div>
-        </div>
-      </div>
-    );
-  }
-
+  // Removido o loading screen - app carrega imediatamente
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
