@@ -8,7 +8,7 @@ export default defineConfig(({ mode }) => {
       server: {
         host: '0.0.0.0',
         strictPort: false,
-        allowedHosts: ['5173-iquk0cdctogfmr5ezfe20-23437995.manusvm.computer', '.manusvm.computer'],
+        // allowedHosts removido - estava bloqueando produção
       },
       plugins: [react()],
       define: {
