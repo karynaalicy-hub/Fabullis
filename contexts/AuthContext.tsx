@@ -17,6 +17,16 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// Helper: Promise with timeout
+const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T> => {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => 
+      setTimeout(() => reject(new Error('Request timeout')), ms)
+    )
+  ]);
+};
+
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [activeSubscription, setActiveSubscription] = useState<UserSubscription | null>(null);
@@ -25,11 +35,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // Buscar dados do usuário no banco
   const fetchUserData = async (authUser: AuthUser): Promise<User | null> => {
     try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', authUser.id)
-        .single();
+      const { data, error } = await withTimeout(
+        supabase
+          .from('users')
+          .select('*')
+          .eq('id', authUser.id)
+          .single(),
+        5000 // 5 segundos timeout
+      );
 
       if (error) {
         console.error('Erro ao buscar dados do usuário:', error);
@@ -48,17 +61,20 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (!currentUser) return;
 
     try {
-      const { data, error } = await supabase
-        .from('user_subscriptions')
-        .select(`
-          *,
-          subscription_plans (*)
-        `)
-        .eq('user_id', currentUser.id)
-        .gte('end_date', new Date().toISOString())
-        .order('end_date', { ascending: false })
-        .limit(1)
-        .single();
+      const { data, error } = await withTimeout(
+        supabase
+          .from('user_subscriptions')
+          .select(`
+            *,
+            subscription_plans (*)
+          `)
+          .eq('user_id', currentUser.id)
+          .gte('end_date', new Date().toISOString())
+          .order('end_date', { ascending: false })
+          .limit(1)
+          .single(),
+        5000
+      );
 
       if (error || !data) {
         setActiveSubscription(null);
@@ -76,33 +92,47 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   useEffect(() => {
     const loadSession = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
+        // Timeout de 8 segundos para getSession
+        const { data: { session } } = await withTimeout(
+          supabase.auth.getSession(),
+          8000
+        );
         
         if (session?.user) {
           const userData = await fetchUserData(session.user);
           if (userData) {
             setCurrentUser(userData);
-            // Verificar assinatura após carregar usuário
-            const { data: subscription } = await supabase
-              .from('user_subscriptions')
-              .select(`
-                *,
-                subscription_plans (*)
-              `)
-              .eq('user_id', userData.id)
-              .gte('end_date', new Date().toISOString())
-              .order('end_date', { ascending: false })
-              .limit(1)
-              .single();
-            
-            if (subscription) {
-              setActiveSubscription(subscription as any);
+            // Verificar assinatura após carregar usuário (não bloqueia se falhar)
+            try {
+              const { data: subscription } = await withTimeout(
+                supabase
+                  .from('user_subscriptions')
+                  .select(`
+                    *,
+                    subscription_plans (*)
+                  `)
+                  .eq('user_id', userData.id)
+                  .gte('end_date', new Date().toISOString())
+                  .order('end_date', { ascending: false })
+                  .limit(1)
+                  .single(),
+                5000
+              );
+              
+              if (subscription) {
+                setActiveSubscription(subscription as any);
+              }
+            } catch (subError) {
+              console.warn('Não foi possível carregar assinatura:', subError);
+              // Não bloqueia o app se falhar
             }
           }
         }
       } catch (error) {
         console.error('Erro ao carregar sessão:', error);
+        // Continua mesmo se falhar - usuário não autenticado
       } finally {
+        // SEMPRE libera o loading, mesmo se falhar
         setLoading(false);
       }
     };
@@ -110,45 +140,63 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     loadSession();
 
     // Escutar mudanças na autenticação
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (event === 'SIGNED_IN' && session?.user) {
-        const userData = await fetchUserData(session.user);
-        if (userData) {
-          setCurrentUser(userData);
-          // Verificar assinatura
-          const { data: sub } = await supabase
-            .from('user_subscriptions')
-            .select(`
-              *,
-              subscription_plans (*)
-            `)
-            .eq('user_id', userData.id)
-            .gte('end_date', new Date().toISOString())
-            .order('end_date', { ascending: false })
-            .limit(1)
-            .single();
-          
-          if (sub) {
-            setActiveSubscription(sub as any);
+    let subscription: any;
+    try {
+      const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'SIGNED_IN' && session?.user) {
+          const userData = await fetchUserData(session.user);
+          if (userData) {
+            setCurrentUser(userData);
+            // Verificar assinatura (não bloqueia se falhar)
+            try {
+              const { data: sub } = await withTimeout(
+                supabase
+                  .from('user_subscriptions')
+                  .select(`
+                    *,
+                    subscription_plans (*)
+                  `)
+                  .eq('user_id', userData.id)
+                  .gte('end_date', new Date().toISOString())
+                  .order('end_date', { ascending: false })
+                  .limit(1)
+                  .single(),
+                5000
+              );
+              
+              if (sub) {
+                setActiveSubscription(sub as any);
+              }
+            } catch (subError) {
+              console.warn('Não foi possível carregar assinatura:', subError);
+            }
           }
+        } else if (event === 'SIGNED_OUT') {
+          setCurrentUser(null);
+          setActiveSubscription(null);
         }
-      } else if (event === 'SIGNED_OUT') {
-        setCurrentUser(null);
-        setActiveSubscription(null);
-      }
-    });
+      });
+      subscription = data.subscription;
+    } catch (error) {
+      console.error('Erro ao configurar listener de auth:', error);
+    }
 
     return () => {
-      subscription.unsubscribe();
+      if (subscription) {
+        subscription.unsubscribe();
+      }
     };
   }, []);
 
   const login = async (email: string, password: string): Promise<User> => {
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+      const { data, error } = await withTimeout(
+        supabase.auth.signInWithPassword({
+          email,
+          password,
+        }),
+        10000
+      );
 
       if (error) throw error;
 
@@ -174,10 +222,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const register = async (nome_usuario: string, email: string, password: string, role: string = 'user'): Promise<User> => {
     try {
       // 1. Criar usuário no Supabase Auth
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email,
-        password,
-      });
+      const { data: authData, error: authError } = await withTimeout(
+        supabase.auth.signUp({
+          email,
+          password,
+        }),
+        10000
+      );
 
       if (authError) throw authError;
 
@@ -186,16 +237,19 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
 
       // 2. Criar registro na tabela users
-      const { data: userData, error: userError } = await supabase
-        .from('users')
-        .insert({
-          id: authData.user.id,
-          nome_usuario,
-          email,
-          role: role as 'user' | 'author' | 'admin',
-        })
-        .select()
-        .single();
+      const { data: userData, error: userError } = await withTimeout(
+        supabase
+          .from('users')
+          .insert({
+            id: authData.user.id,
+            nome_usuario,
+            email,
+            role: role as 'user' | 'author' | 'admin',
+          })
+          .select()
+          .single(),
+        10000
+      );
 
       if (userError) {
         // Se falhar ao criar usuário, deletar da auth
@@ -213,11 +267,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const logout = async () => {
     try {
-      await supabase.auth.signOut();
+      await withTimeout(supabase.auth.signOut(), 5000);
       setCurrentUser(null);
       setActiveSubscription(null);
     } catch (error) {
       console.error('Erro ao fazer logout:', error);
+      // Limpa localmente mesmo se falhar
+      setCurrentUser(null);
+      setActiveSubscription(null);
     }
   };
 
@@ -242,7 +299,19 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         height: '100vh',
         background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
       }}>
-        <div style={{ color: 'white', fontSize: '1.5rem' }}>Carregando...</div>
+        <div style={{ 
+          textAlign: 'center',
+          color: 'white'
+        }}>
+          <div style={{ 
+            fontSize: '1.5rem',
+            marginBottom: '1rem'
+          }}>Carregando...</div>
+          <div style={{ 
+            fontSize: '0.875rem',
+            opacity: 0.8
+          }}>Conectando ao servidor...</div>
+        </div>
       </div>
     );
   }
